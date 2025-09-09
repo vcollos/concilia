@@ -77,6 +77,40 @@ def _format_total_column(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _format_dates_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    for c in out.columns:
+        if str(out[c].dtype).startswith("datetime64"):
+            out[c] = out[c].dt.strftime("%d/%m/%Y")
+    return out
+
+
+def _show_group_totals(g: pd.DataFrame):
+    try:
+        total_qtd = int(g["qtd"].sum()) if "qtd" in g.columns else None
+        total_sum = float(g["total"].sum()) if "total" in g.columns else None
+        parts = []
+        if total_qtd is not None:
+            parts.append(f"Qtd: {total_qtd}")
+        if total_sum is not None:
+            parts.append(f"Total: {_fmt_brl(total_sum)}")
+        if parts:
+            st.markdown(" ".join(["**Total do agrupamento:**"] + parts))
+    except Exception:
+        pass
+
+
+def _show_analytic_totals(df_src: pd.DataFrame):
+    try:
+        n = int(df_src.shape[0])
+        total_sum = float(df_src["Valor"].sum()) if "Valor" in df_src.columns else 0.0
+        st.markdown(f"**Total analítico:** Registros: {n} • Valor: {_fmt_brl(total_sum)}")
+    except Exception:
+        pass
+
+
 def _format_df_for_pdf(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df.copy()
@@ -170,7 +204,22 @@ def _build_pdf(
     story.append(Spacer(1, 8))
 
     # Sections (tables)
+    def _title_with_total(t: str, df_in: pd.DataFrame) -> str:
+        try:
+            if df_in is None or df_in.empty:
+                return t
+            if "total" in df_in.columns:
+                s = float(pd.to_numeric(df_in["total"], errors="coerce").fillna(0).sum())
+                return f"{t} — Total: {_fmt_brl(s)}"
+            if "Valor" in df_in.columns:
+                s = float(pd.to_numeric(df_in["Valor"], errors="coerce").fillna(0).sum())
+                return f"{t} — Total: {_fmt_brl(s)}"
+            return t
+        except Exception:
+            return t
+
     for sec_title, sec_df in sections:
+        sec_title_final = _title_with_total(sec_title, sec_df)
         sec_df_fmt = _format_df_for_pdf(sec_df)
         col_widths = None
         if "Registros (colunas selecionadas)" in sec_title:
@@ -199,7 +248,7 @@ def _build_pdf(
             s = sum(weights) if sum(weights) > 0 else 1.0
             weights = [w / s for w in weights]
             col_widths = [max(40, page_width * w) for w in weights]
-        story.extend(_df_to_table_flowable(sec_df_fmt, sec_title, col_widths=col_widths))
+        story.extend(_df_to_table_flowable(sec_df_fmt, sec_title_final, col_widths=col_widths))
         # Page break after very large sections might be added automatically by flowables
 
     doc.build(story)
@@ -246,6 +295,36 @@ def _summary_tables(df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
         sections.append(("Totais por Classe", group_totals(df, ["CLASSE"])) )
     if "Nome Banco" in df.columns:
         sections.append(("Totais por Banco", group_totals(df, ["Nome Banco"])) )
+    return sections
+
+
+def _detail_sections_from_summary(src_df: pd.DataFrame, g_summary: pd.DataFrame, by_cols: List[str]) -> list[tuple[str, pd.DataFrame]]:
+    """Build analytic sections per group row in g_summary, using by_cols order.
+    The detail tables include only selected report columns.
+    """
+    if src_df is None or src_df.empty or g_summary is None or g_summary.empty:
+        return []
+    sections: list[tuple[str, pd.DataFrame]] = []
+    for _, row in g_summary.iterrows():
+        mask = pd.Series(True, index=src_df.index)
+        parts = []
+        for col in by_cols:
+            val = row[col] if col in row else None
+            if pd.isna(val):
+                mask &= src_df[col].isna()
+                parts.append(f"{col}=nulo")
+            else:
+                if isinstance(val, pd.Timestamp):
+                    mask &= src_df[col] == val
+                    parts.append(val.strftime("%d/%m/%Y"))
+                else:
+                    mask &= src_df[col] == val
+                    parts.append(str(val))
+        detail = src_df.loc[mask]
+        if detail.empty:
+            continue
+        title = "Detalhes – " + " | ".join(parts)
+        sections.append((title, _select_full_columns(detail)))
     return sections
 
 
@@ -361,28 +440,32 @@ def apply_date_filter(current_df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
             return current_df.loc[mask].copy(), f"{date_col} de {start.date()} até {end_date}"
     return current_df, "Sem filtro de data"
 
-st.subheader("Resumo do processamento")
+st.subheader("Resumo do processamento (visão atual)")
+# Apply global period filter (if any) to reflect current view in the summary
+df_top_view, filter_summary_top = apply_date_filter(df)
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Linhas originais", f"{clean_stats['initial_rows']}")
 col2.metric("Linhas removidas (*)", f"{clean_stats['dropped_star_rows']}")
-col3.metric("Linhas finais", f"{clean_stats['final_rows']}")
-total_valor = df["Valor"].sum() if "Valor" in df.columns else 0.0
+col3.metric("Linhas finais", f"{df_top_view.shape[0]}")
+total_valor = df_top_view["Valor"].sum() if "Valor" in df_top_view.columns else 0.0
 col4.metric("Total Valor", f"R$ {total_valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+st.caption(f"Período: {filter_summary_top}")
 
 
 st.divider()
 
-tabs = st.tabs(["Dados limpos", "Por datas", "Por CLASSE", "Por banco", "Agrupar livre"]) 
+tabs = st.tabs(["Dados limpos", "Montar Relatórios"]) 
 
 with tabs[0]:
     st.write("Pré-visualização dos dados limpos:")
     render_date_filter_controls(df, ns="tab0")
     df_view, filter_summary = apply_date_filter(df)
     st.caption(f"Filtro: {filter_summary}")
-    st.dataframe(df_view, use_container_width=True, height=450)
+    st.dataframe(_format_dates_for_display(df_view), use_container_width=True, height=450)
+    _show_analytic_totals(df_view)
 
     # Download cleaned file
-    csv_clean = df_view.to_csv(index=False).encode("utf-8-sig")
+    csv_clean = _format_dates_for_display(df_view).to_csv(index=False).encode("utf-8-sig")
     st.download_button(
         "Baixar CSV limpo",
         data=csv_clean,
@@ -426,6 +509,13 @@ with tabs[0]:
             date_cols_x = [c for c in ["Pagto"] if c in df_view.columns]
             workbook = writer.book
             fmt_currency = workbook.add_format({"num_format": "R$ #,##0.00"})
+            fmt_date = workbook.add_format({"num_format": "dd/mm/yyyy"})
+            # Format date columns on limpo sheet
+            ws_limpo = writer.sheets["limpo"]
+            for col_name in df_view.columns:
+                if str(df_view[col_name].dtype).startswith("datetime64"):
+                    idx = df_view.columns.get_loc(col_name)
+                    ws_limpo.set_column(idx, idx, None, fmt_date)
             for c in date_cols_x:
                 g = group_totals(df_view, [c])
                 sheet_name = f"por_{c[:28]}"
@@ -434,6 +524,10 @@ with tabs[0]:
                     ws = writer.sheets[sheet_name]
                     col_idx = g.columns.get_loc("total")
                     ws.set_column(col_idx, col_idx, None, fmt_currency)
+                # Date column formatting on grouped sheet
+                if c in g.columns:
+                    col_idx_date = g.columns.get_loc(c)
+                    ws.set_column(col_idx_date, col_idx_date, None, fmt_date)
             if "CLASSE" in df_view.columns:
                 g = group_totals(df_view, ["CLASSE"]) 
                 g.to_excel(writer, index=False, sheet_name="por_CLASSE")
@@ -458,171 +552,13 @@ with tabs[0]:
     except Exception as e:
         st.caption("Instale 'xlsxwriter' para exportar Excel com múltiplas abas.")
 
+# Removed tabs for Por datas/Classe/Banco to simplify UI
+
+## Tab removida: Por CLASSE
+
+## Tab removida: Por banco
+
 with tabs[1]:
-    st.write("Totais por data de pagamento (soma de Valor e quantidade):")
-    render_date_filter_controls(df, ns="tab1")
-    df_view, filter_summary = apply_date_filter(df)
-    st.caption(f"Filtro: {filter_summary}")
-    
-    date_cols: List[str] = [c for c in ["Pagto"] if c in df_view.columns]
-    if not date_cols:
-        st.warning("Coluna de data 'Pagto' não encontrada.")
-    else:
-        c = "Pagto"
-        st.markdown(f"#### {c}")
-        # Optional filter by grouped value(s)
-        unique_dates = sorted(pd.to_datetime(df_view[c]).dropna().dt.date.unique())
-        sel_dates = st.multiselect(
-            "Filtrar datas de pagamento",
-            options=unique_dates,
-            format_func=lambda d: d.strftime("%d/%m/%Y"),
-            key="flt_group_pagto_values",
-        )
-        df_group_src = df_view
-        if sel_dates:
-            mask_dates = df_group_src[c].dt.date.isin(sel_dates)
-            df_group_src = df_group_src.loc[mask_dates]
-        g = group_totals(df_group_src, [c]) if not df_group_src.empty else pd.DataFrame()
-        g_disp = _format_total_column(g)
-        st.dataframe(g_disp, use_container_width=True)
-        st.download_button(
-            f"Baixar CSV – {c}",
-            data=g_disp.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"totais_por_{c.replace(' ', '_')}.csv",
-            mime="text/csv",
-            key=f"download_{c}",
-        )
-        # Full report button
-        if REPORTLAB_AVAILABLE and st.button("Baixar PDF – relatório", key="pdf_tab1"):
-            sections = []
-            pdf_src = df_group_src if 'df_group_src' in locals() else df_view
-            sections.extend(_summary_tables(pdf_src))
-            full_df = _select_full_columns(pdf_src)
-            sections.append(("Registros (colunas selecionadas)", full_df))
-            summary = {
-                "initial_rows": clean_stats.get("initial_rows"),
-                "dropped_star_rows": clean_stats.get("dropped_star_rows"),
-                "final_rows": pdf_src.shape[0],
-                "total_valor": float(pdf_src["Valor"].sum()) if "Valor" in pdf_src.columns else 0.0,
-            }
-            pdf_bytes = _build_pdf("Relatório – Conciliação Odontotech", summary, filter_summary, sections)
-            st.download_button(
-                "Baixar PDF gerado",
-                data=pdf_bytes,
-                file_name="relatorio_conciliacao.pdf",
-                mime="application/pdf",
-                key="dl_pdf_tab1",
-            )
-        elif not REPORTLAB_AVAILABLE:
-            st.warning("PDF server-side indisponível: instale 'reportlab' (pip install -r requirements.txt).")
-
-with tabs[2]:
-    render_date_filter_controls(df, ns="tab2")
-    df_view, filter_summary = apply_date_filter(df)
-    if "CLASSE" not in df_view.columns:
-        st.warning("Coluna 'CLASSE' não encontrada.")
-    else:
-        st.caption(f"Filtro: {filter_summary}")
-        # Filter by selected classes (optional)
-        classes = sorted([x for x in df_view["CLASSE"].dropna().unique().tolist()])
-        sel_classes = st.multiselect(
-            "Filtrar classes",
-            options=classes,
-            key="flt_group_classe_values",
-        )
-        src = df_view
-        if sel_classes:
-            src = src[src["CLASSE"].isin(sel_classes)]
-        g = group_totals(src, ["CLASSE"]) if not src.empty else pd.DataFrame()
-        g_disp = _format_total_column(g)
-        st.dataframe(g_disp, use_container_width=True)
-        st.download_button(
-            "Baixar CSV – por CLASSE",
-            data=g_disp.to_csv(index=False).encode("utf-8-sig"),
-            file_name="totais_por_CLASSE.csv",
-            mime="text/csv",
-        )
-        
-        if REPORTLAB_AVAILABLE and st.button("Baixar PDF – relatório", key="pdf_tab2"):
-            sections = []
-            pdf_src = src if 'src' in locals() else df_view
-            sections.extend(_summary_tables(pdf_src))
-            full_df = _select_full_columns(pdf_src)
-            sections.append(("Registros (colunas selecionadas)", full_df))
-            summary = {
-                "initial_rows": clean_stats.get("initial_rows"),
-                "dropped_star_rows": clean_stats.get("dropped_star_rows"),
-                "final_rows": pdf_src.shape[0],
-                "total_valor": float(pdf_src["Valor"].sum()) if "Valor" in pdf_src.columns else 0.0,
-            }
-            pdf_bytes = _build_pdf("Relatório – Conciliação Odontotech", summary, filter_summary, sections)
-            st.download_button(
-                "Baixar PDF gerado",
-                data=pdf_bytes,
-                file_name="relatorio_conciliacao.pdf",
-                mime="application/pdf",
-                key="dl_pdf_tab2",
-            )
-        elif not REPORTLAB_AVAILABLE:
-            st.warning("PDF server-side indisponível: instale 'reportlab' (pip install -r requirements.txt).")
-
-with tabs[3]:
-    render_date_filter_controls(df, ns="tab3")
-    df_view, filter_summary = apply_date_filter(df)
-    banco_col_default = detect_banco_column(df_view)
-    if not banco_col_default:
-        st.warning("Colunas de banco não encontradas (Nome Banco, NºBanco, ID Banco, ID Conta Corrente).")
-    else:
-        banco_col = st.selectbox(
-            "Coluna de banco para agrupar",
-            options=[c for c in ["Nome Banco", "NºBanco", "ID Banco", "ID Conta Corrente"] if c in df_view.columns],
-            index=[c for c in ["Nome Banco", "NºBanco", "ID Banco", "ID Conta Corrente"] if c in df_view.columns].index(banco_col_default),
-        )
-        st.caption(f"Filtro: {filter_summary}")
-        # Optional filter by bank values
-        bank_values = sorted([x for x in df_view[banco_col].dropna().unique().tolist()])
-        sel_banks = st.multiselect(
-            f"Filtrar {banco_col}",
-            options=bank_values,
-            key="flt_group_banco_values",
-        )
-        src = df_view
-        if sel_banks:
-            src = src[src[banco_col].isin(sel_banks)]
-        g = group_totals(src, [banco_col]) if not src.empty else pd.DataFrame()
-        g_disp = _format_total_column(g)
-        st.dataframe(g_disp, use_container_width=True)
-        st.download_button(
-            f"Baixar CSV – por {banco_col}",
-            data=g_disp.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"totais_por_{banco_col.replace(' ', '_')}.csv",
-            mime="text/csv",
-        )
-        
-        if REPORTLAB_AVAILABLE and st.button("Baixar PDF – relatório", key="pdf_tab3"):
-            sections = []
-            pdf_src = src if 'src' in locals() else df_view
-            sections.extend(_summary_tables(pdf_src))
-            full_df = _select_full_columns(pdf_src)
-            sections.append(("Registros (colunas selecionadas)", full_df))
-            summary = {
-                "initial_rows": clean_stats.get("initial_rows"),
-                "dropped_star_rows": clean_stats.get("dropped_star_rows"),
-                "final_rows": pdf_src.shape[0],
-                "total_valor": float(pdf_src["Valor"].sum()) if "Valor" in pdf_src.columns else 0.0,
-            }
-            pdf_bytes = _build_pdf("Relatório – Conciliação Odontotech", summary, filter_summary, sections)
-            st.download_button(
-                "Baixar PDF gerado",
-                data=pdf_bytes,
-                file_name="relatorio_conciliacao.pdf",
-                mime="application/pdf",
-                key="dl_pdf_tab3",
-            )
-        elif not REPORTLAB_AVAILABLE:
-            st.warning("PDF server-side indisponível: instale 'reportlab' (pip install -r requirements.txt).")
-
-with tabs[4]:
     st.write("Monte seu agrupamento livremente.")
     render_date_filter_controls(df, ns="tab4")
     df_view, filter_summary = apply_date_filter(df)
@@ -672,22 +608,35 @@ with tabs[4]:
                     g = g.sort_values(sort_by, ascending=ascending, kind="mergesort")
                 except Exception:
                     g = g.sort_values(sort_by, kind="mergesort")
-        g_disp = _format_total_column(g)
+        g_disp = _format_total_column(_format_dates_for_display(g))
         st.dataframe(g_disp, use_container_width=True)
+        _show_group_totals(g)
         st.download_button(
             "Baixar CSV – agrupamento livre",
             data=g_disp.to_csv(index=False).encode("utf-8-sig"),
             file_name="totais_agrupados.csv",
             mime="text/csv",
         )
+        # Analítico (lançamentos)
+        st.markdown("#### Lançamentos filtrados (analítico)")
+        st.dataframe(_format_dates_for_display(src), use_container_width=True, height=360)
+        _show_analytic_totals(src)
         
         # PDF only with the free grouping (relatório total do agrupamento livre)
         if REPORTLAB_AVAILABLE and st.button("Baixar PDF – agrupamento livre", key="pdf_tab4"):
             sections = [("Agrupamento livre", g)]
+            # Per-group details following current grouping selection 'by'
+            try:
+                details = _detail_sections_from_summary(src if 'src' in locals() else df_view, g, by)
+                sections.extend(details)
+            except Exception:
+                pass
+            full_df = _select_full_columns(src if 'src' in locals() else df_view)
+            sections.append(("Registros (colunas selecionadas)", full_df))
             summary = {
                 "initial_rows": clean_stats.get("initial_rows"),
                 "dropped_star_rows": clean_stats.get("dropped_star_rows"),
-                "final_rows": src.shape[0] if 'src' in locals() else df_view.shape[0],
+                "final_rows": (src if 'src' in locals() else df_view).shape[0],
                 "total_valor": float((src if 'src' in locals() else df_view)["Valor"].sum()) if "Valor" in (src if 'src' in locals() else df_view).columns else 0.0,
             }
             pdf_bytes = _build_pdf("Relatório – Agrupamento livre", summary, filter_summary, sections)
