@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+env/
+ENV/
+pip-wheel-metadata/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/secrets.toml
+.streamlit/**/secrets.toml
+
+# Notebooks and data dumps
+*.ipynb_checkpoints/
+*.csv
+*.ofx
+*.xlsx
+*.xls
+*.pdf
+
+# IDE
+.idea/
+.vscode/
+
