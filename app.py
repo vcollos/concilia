@@ -268,79 +268,72 @@ def _date_columns(current_df: pd.DataFrame) -> List[str]:
 
 
 def render_date_filter_controls(current_df: pd.DataFrame, ns: str) -> None:
-    cols = _date_columns(current_df)
-    st.markdown("### Filtro de data")
-    # Shared state values
-    global_date_col = st.session_state.get("flt_date_col", "(sem filtro)")
-    options = ["(sem filtro)"] + cols
-    idx = options.index(global_date_col) if global_date_col in options else 0
-    sel = st.selectbox("Coluna", options=options, index=idx, key=f"{ns}_flt_date_col")
-    st.session_state["flt_date_col"] = sel
+    st.markdown("### Filtro por data de pagamento")
+    if "Pagto" not in current_df.columns:
+        st.caption("Coluna 'Pagto' não encontrada no arquivo.")
+        return
+    # Toggle enable/disable
+    enabled = st.session_state.get("flt_enabled", False)
+    enabled = st.checkbox("Filtrar por Pagto", value=enabled, key=f"{ns}_flt_enabled")
+    st.session_state["flt_enabled"] = enabled
+    if not enabled:
+        return
+    gran_options = ["Dia", "Semana", "Mês", "De... Até"]
+    global_gran = st.session_state.get("flt_gran", "Dia")
+    gran_idx = gran_options.index(global_gran) if global_gran in gran_options else 0
+    gran = st.radio("Granularidade", options=gran_options, horizontal=True, index=gran_idx, key=f"{ns}_flt_gran")
+    st.session_state["flt_gran"] = gran
 
-    if sel != "(sem filtro)":
-        gran_options = ["Dia", "Semana", "Mês", "De... Até"]
-        global_gran = st.session_state.get("flt_gran", "Dia")
-        gran_idx = gran_options.index(global_gran) if global_gran in gran_options else 0
-        gran = st.radio("Granularidade", options=gran_options, horizontal=True, index=gran_idx, key=f"{ns}_flt_gran")
-        st.session_state["flt_gran"] = gran
-
-        date_col = sel
-        col_min = pd.to_datetime(current_df[date_col])
-        min_date = col_min.min()
-        max_date = col_min.max()
-        if gran == "Dia":
-            default_day = st.session_state.get("flt_day", min_date.date() if pd.notna(min_date) else None)
-            chosen = st.date_input(
-                "Dia",
-                value=default_day,
-                min_value=min_date.date() if pd.notna(min_date) else None,
-                max_value=max_date.date() if pd.notna(max_date) else None,
-                key=f"{ns}_flt_day",
-            )
-            if chosen:
-                st.session_state["flt_day"] = chosen
-        elif gran == "Semana":
-            iso = current_df[date_col].dt.isocalendar()
-            week_pairs = sorted(set(zip(iso.year.fillna(0).astype(int), iso.week.fillna(0).astype(int))))
-            labels = [f"{y}-W{int(w):02d}" for (y, w) in week_pairs if y > 0 and w > 0]
-            if labels:
-                default_week = st.session_state.get("flt_week_label", labels[0])
-                widx = labels.index(default_week) if default_week in labels else 0
-                chosen = st.selectbox("Semana (ISO)", options=labels, index=widx, key=f"{ns}_flt_week_label")
-                st.session_state["flt_week_label"] = chosen
-        elif gran == "Mês":
-            months = current_df[date_col].dt.to_period("M").dropna().unique()
-            months = sorted(months)
-            labels = [str(p) for p in months]
-            if labels:
-                default_month = st.session_state.get("flt_month_label", labels[0])
-                midx = labels.index(default_month) if default_month in labels else 0
-                chosen = st.selectbox("Mês", options=labels, index=midx, key=f"{ns}_flt_month_label")
-                st.session_state["flt_month_label"] = chosen
-        elif gran == "De... Até":
-            default_range = st.session_state.get(
-                "flt_range",
-                (
-                    min_date.date() if pd.notna(min_date) else None,
-                    max_date.date() if pd.notna(max_date) else None,
-                ),
-            )
-            chosen = st.date_input(
-                "Período (De... Até)",
-                value=default_range,
-                min_value=min_date.date() if pd.notna(min_date) else None,
-                max_value=max_date.date() if pd.notna(max_date) else None,
-                key=f"{ns}_flt_range",
-            )
-            # Streamlit returns a tuple(start, end) when value is a tuple
-            if isinstance(chosen, (list, tuple)) and len(chosen) == 2:
-                st.session_state["flt_range"] = (chosen[0], chosen[1])
+    date_col = "Pagto"
+    col_min = pd.to_datetime(current_df[date_col])
+    min_date = col_min.min()
+    max_date = col_min.max()
+    if gran == "Dia":
+        default_day = st.session_state.get("flt_day", None)
+        chosen = st.date_input(
+            "Dia",
+            value=default_day,
+            min_value=min_date.date() if pd.notna(min_date) else None,
+            max_value=max_date.date() if pd.notna(max_date) else None,
+            key=f"{ns}_flt_day",
+        )
+        if chosen:
+            st.session_state["flt_day"] = chosen
+    elif gran == "Semana":
+        iso = current_df[date_col].dt.isocalendar()
+        week_pairs = sorted(set(zip(iso.year.fillna(0).astype(int), iso.week.fillna(0).astype(int))))
+        labels = [f"{y}-W{int(w):02d}" for (y, w) in week_pairs if y > 0 and w > 0]
+        if labels:
+            default_week = st.session_state.get("flt_week_label", None)
+            widx = labels.index(default_week) if default_week in labels else 0
+            chosen = st.selectbox("Semana (ISO)", options=labels, index=widx, key=f"{ns}_flt_week_label")
+            st.session_state["flt_week_label"] = chosen
+    elif gran == "Mês":
+        months = current_df[date_col].dt.to_period("M").dropna().unique()
+        months = sorted(months)
+        labels = [str(p) for p in months]
+        if labels:
+            default_month = st.session_state.get("flt_month_label", None)
+            midx = labels.index(default_month) if default_month in labels else 0
+            chosen = st.selectbox("Mês", options=labels, index=midx, key=f"{ns}_flt_month_label")
+            st.session_state["flt_month_label"] = chosen
+    elif gran == "De... Até":
+        default_range = st.session_state.get("flt_range", (None, None))
+        chosen = st.date_input(
+            "Período (De... Até)",
+            value=default_range,
+            min_value=min_date.date() if pd.notna(min_date) else None,
+            max_value=max_date.date() if pd.notna(max_date) else None,
+            key=f"{ns}_flt_range",
+        )
+        if isinstance(chosen, (list, tuple)) and len(chosen) == 2:
+            st.session_state["flt_range"] = (chosen[0], chosen[1])
 
 
 def apply_date_filter(current_df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
-    if not st.session_state.get("flt_date_col") or st.session_state["flt_date_col"] == "(sem filtro)":
+    if "Pagto" not in current_df.columns or not st.session_state.get("flt_enabled"):
         return current_df, "Sem filtro de data"
-    date_col = st.session_state["flt_date_col"]
+    date_col = "Pagto"
     gran = st.session_state.get("flt_gran")
     if gran == "Dia" and st.session_state.get("flt_day"):
         start = pd.to_datetime(st.session_state["flt_day"])
@@ -475,18 +468,30 @@ with tabs[1]:
     if not date_cols:
         st.warning("Coluna de data 'Pagto' não encontrada.")
     else:
-        for c in date_cols:
-            st.markdown(f"#### {c}")
-            g = group_totals(df_view, [c]) if not df_view.empty else pd.DataFrame()
-            g_disp = _format_total_column(g)
-            st.dataframe(g_disp, use_container_width=True)
-            st.download_button(
-                f"Baixar CSV – {c}",
-                data=g_disp.to_csv(index=False).encode("utf-8-sig"),
-                file_name=f"totais_por_{c.replace(' ', '_')}.csv",
-                mime="text/csv",
-                key=f"download_{c}",
-            )
+        c = "Pagto"
+        st.markdown(f"#### {c}")
+        # Optional filter by grouped value(s)
+        unique_dates = sorted(pd.to_datetime(df_view[c]).dropna().dt.date.unique())
+        sel_dates = st.multiselect(
+            "Filtrar datas de pagamento",
+            options=unique_dates,
+            format_func=lambda d: d.strftime("%d/%m/%Y"),
+            key="flt_group_pagto_values",
+        )
+        df_group_src = df_view
+        if sel_dates:
+            mask_dates = df_group_src[c].dt.date.isin(sel_dates)
+            df_group_src = df_group_src.loc[mask_dates]
+        g = group_totals(df_group_src, [c]) if not df_group_src.empty else pd.DataFrame()
+        g_disp = _format_total_column(g)
+        st.dataframe(g_disp, use_container_width=True)
+        st.download_button(
+            f"Baixar CSV – {c}",
+            data=g_disp.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"totais_por_{c.replace(' ', '_')}.csv",
+            mime="text/csv",
+            key=f"download_{c}",
+        )
         # Full report button
         if REPORTLAB_AVAILABLE and st.button("Baixar PDF – relatório", key="pdf_tab1"):
             sections = []
@@ -517,7 +522,17 @@ with tabs[2]:
         st.warning("Coluna 'CLASSE' não encontrada.")
     else:
         st.caption(f"Filtro: {filter_summary}")
-        g = group_totals(df_view, ["CLASSE"]) if not df_view.empty else pd.DataFrame()
+        # Filter by selected classes (optional)
+        classes = sorted([x for x in df_view["CLASSE"].dropna().unique().tolist()])
+        sel_classes = st.multiselect(
+            "Filtrar classes",
+            options=classes,
+            key="flt_group_classe_values",
+        )
+        src = df_view
+        if sel_classes:
+            src = src[src["CLASSE"].isin(sel_classes)]
+        g = group_totals(src, ["CLASSE"]) if not src.empty else pd.DataFrame()
         g_disp = _format_total_column(g)
         st.dataframe(g_disp, use_container_width=True)
         st.download_button(
@@ -562,7 +577,17 @@ with tabs[3]:
             index=[c for c in ["Nome Banco", "NºBanco", "ID Banco", "ID Conta Corrente"] if c in df_view.columns].index(banco_col_default),
         )
         st.caption(f"Filtro: {filter_summary}")
-        g = group_totals(df_view, [banco_col]) if not df_view.empty else pd.DataFrame()
+        # Optional filter by bank values
+        bank_values = sorted([x for x in df_view[banco_col].dropna().unique().tolist()])
+        sel_banks = st.multiselect(
+            f"Filtrar {banco_col}",
+            options=bank_values,
+            key="flt_group_banco_values",
+        )
+        src = df_view
+        if sel_banks:
+            src = src[src[banco_col].isin(sel_banks)]
+        g = group_totals(src, [banco_col]) if not src.empty else pd.DataFrame()
         g_disp = _format_total_column(g)
         st.dataframe(g_disp, use_container_width=True)
         st.download_button(
