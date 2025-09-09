@@ -598,7 +598,9 @@ with tabs[4]:
     st.write("Monte seu agrupamento livremente.")
     render_date_filter_controls(df, ns="tab4")
     df_view, filter_summary = apply_date_filter(df)
-    choices = [c for c in ["Pagto", "CLASSE", "Nome Banco", "NºBanco", "ID Banco"] if c in df_view.columns]
+    # Hide certain columns from grouping options
+    hidden_cols = {"Histórico", "Historico", "CPF", "Fone1", "Fone2", "Fone3", "Fone4", "Celular", "Razão Social"}
+    choices = [c for c in list(df_view.columns) if c not in hidden_cols]
     default_opts = [c for c in ["Pagto", "CLASSE"] if c in choices]
     by = st.multiselect("Agrupar por", options=choices, default=default_opts)
     if by:
