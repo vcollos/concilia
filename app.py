@@ -495,14 +495,15 @@ with tabs[1]:
         # Full report button
         if REPORTLAB_AVAILABLE and st.button("Baixar PDF – relatório", key="pdf_tab1"):
             sections = []
-            sections.extend(_summary_tables(df_view))
-            full_df = _select_full_columns(df_view)
+            pdf_src = df_group_src if 'df_group_src' in locals() else df_view
+            sections.extend(_summary_tables(pdf_src))
+            full_df = _select_full_columns(pdf_src)
             sections.append(("Registros (colunas selecionadas)", full_df))
             summary = {
                 "initial_rows": clean_stats.get("initial_rows"),
                 "dropped_star_rows": clean_stats.get("dropped_star_rows"),
-                "final_rows": df_view.shape[0],
-                "total_valor": float(df_view["Valor"].sum()) if "Valor" in df_view.columns else 0.0,
+                "final_rows": pdf_src.shape[0],
+                "total_valor": float(pdf_src["Valor"].sum()) if "Valor" in pdf_src.columns else 0.0,
             }
             pdf_bytes = _build_pdf("Relatório – Conciliação Odontotech", summary, filter_summary, sections)
             st.download_button(
@@ -544,14 +545,15 @@ with tabs[2]:
         
         if REPORTLAB_AVAILABLE and st.button("Baixar PDF – relatório", key="pdf_tab2"):
             sections = []
-            sections.extend(_summary_tables(df_view))
-            full_df = _select_full_columns(df_view)
+            pdf_src = src if 'src' in locals() else df_view
+            sections.extend(_summary_tables(pdf_src))
+            full_df = _select_full_columns(pdf_src)
             sections.append(("Registros (colunas selecionadas)", full_df))
             summary = {
                 "initial_rows": clean_stats.get("initial_rows"),
                 "dropped_star_rows": clean_stats.get("dropped_star_rows"),
-                "final_rows": df_view.shape[0],
-                "total_valor": float(df_view["Valor"].sum()) if "Valor" in df_view.columns else 0.0,
+                "final_rows": pdf_src.shape[0],
+                "total_valor": float(pdf_src["Valor"].sum()) if "Valor" in pdf_src.columns else 0.0,
             }
             pdf_bytes = _build_pdf("Relatório – Conciliação Odontotech", summary, filter_summary, sections)
             st.download_button(
@@ -599,14 +601,15 @@ with tabs[3]:
         
         if REPORTLAB_AVAILABLE and st.button("Baixar PDF – relatório", key="pdf_tab3"):
             sections = []
-            sections.extend(_summary_tables(df_view))
-            full_df = _select_full_columns(df_view)
+            pdf_src = src if 'src' in locals() else df_view
+            sections.extend(_summary_tables(pdf_src))
+            full_df = _select_full_columns(pdf_src)
             sections.append(("Registros (colunas selecionadas)", full_df))
             summary = {
                 "initial_rows": clean_stats.get("initial_rows"),
                 "dropped_star_rows": clean_stats.get("dropped_star_rows"),
-                "final_rows": df_view.shape[0],
-                "total_valor": float(df_view["Valor"].sum()) if "Valor" in df_view.columns else 0.0,
+                "final_rows": pdf_src.shape[0],
+                "total_valor": float(pdf_src["Valor"].sum()) if "Valor" in pdf_src.columns else 0.0,
             }
             pdf_bytes = _build_pdf("Relatório – Conciliação Odontotech", summary, filter_summary, sections)
             st.download_button(
@@ -630,7 +633,24 @@ with tabs[4]:
     by = st.multiselect("Agrupar por", options=choices, default=default_opts)
     if by:
         st.caption(f"Filtro: {filter_summary}")
-        g = group_totals(df_view, by) if not df_view.empty else pd.DataFrame()
+        src = df_view
+        # Filters based on selected grouping dimensions
+        for dim in by:
+            key_base = f"tab4_group_filter_{dim}".replace(" ", "_")
+            if str(src[dim].dtype).startswith("datetime64"):
+                opts = sorted(pd.to_datetime(src[dim]).dropna().dt.date.unique())
+                sel = st.multiselect(
+                    f"Filtrar {dim}", options=opts, format_func=lambda d: d.strftime("%d/%m/%Y"), key=key_base
+                )
+                if sel:
+                    src = src[src[dim].dt.date.isin(sel)]
+            else:
+                opts = sorted([x for x in src[dim].dropna().unique().tolist()])
+                sel = st.multiselect(f"Filtrar {dim}", options=opts, key=key_base)
+                if sel:
+                    src = src[src[dim].isin(sel)]
+
+        g = group_totals(src, by) if not src.empty else pd.DataFrame()
         g_disp = _format_total_column(g)
         st.dataframe(g_disp, use_container_width=True)
         st.download_button(
@@ -646,8 +666,8 @@ with tabs[4]:
             summary = {
                 "initial_rows": clean_stats.get("initial_rows"),
                 "dropped_star_rows": clean_stats.get("dropped_star_rows"),
-                "final_rows": df_view.shape[0],
-                "total_valor": float(df_view["Valor"].sum()) if "Valor" in df_view.columns else 0.0,
+                "final_rows": src.shape[0] if 'src' in locals() else df_view.shape[0],
+                "total_valor": float((src if 'src' in locals() else df_view)["Valor"].sum()) if "Valor" in (src if 'src' in locals() else df_view).columns else 0.0,
             }
             pdf_bytes = _build_pdf("Relatório – Agrupamento livre", summary, filter_summary, sections)
             st.download_button(
