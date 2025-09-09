@@ -274,7 +274,7 @@ def render_date_filter_controls(current_df: pd.DataFrame, ns: str) -> None:
         return
     # Toggle enable/disable
     enabled = st.session_state.get("flt_enabled", False)
-    enabled = st.checkbox("Filtrar por Pagto", value=enabled, key=f"{ns}_flt_enabled")
+    enabled = st.checkbox("Filtrar por Período", value=enabled, key=f"{ns}_flt_enabled")
     st.session_state["flt_enabled"] = enabled
     if not enabled:
         return
@@ -651,6 +651,27 @@ with tabs[4]:
                     src = src[src[dim].isin(sel)]
 
         g = group_totals(src, by) if not src.empty else pd.DataFrame()
+        # Multi-level sorting controls
+        if not g.empty:
+            sort_options = list(g.columns)
+            sort_default = [c for c in by if c in sort_options]
+            sort_by = st.multiselect(
+                "Classificar por (ordem de prioridade)",
+                options=sort_options,
+                default=sort_default,
+                key="tab4_sort_by",
+            )
+            if sort_by:
+                ascending = []
+                for col in sort_by:
+                    desc = st.checkbox(
+                        f"Decrescente: {col}", value=False, key=f"tab4_sort_desc_{col}"
+                    )
+                    ascending.append(not desc)
+                try:
+                    g = g.sort_values(sort_by, ascending=ascending, kind="mergesort")
+                except Exception:
+                    g = g.sort_values(sort_by, kind="mergesort")
         g_disp = _format_total_column(g)
         st.dataframe(g_disp, use_container_width=True)
         st.download_button(
