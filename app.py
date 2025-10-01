@@ -1,4 +1,5 @@
 import io
+import unicodedata
 from typing import List, Tuple
 
 import pandas as pd
@@ -254,6 +255,67 @@ def _build_pdf(
 
     doc.build(story)
     return buf.getvalue()
+
+
+_ACCOUNTING_RULES = {
+    "ATO COMPLEMENTAR PF": ("13709", "12767", "79"),
+    "DESCONTO ADMINISTRATIVO": ("52874", "13709", "221"),
+    "DESCONTOS CONCEDIDOS SOBRE MENSALIDADE": ("52874", "13709", "221"),
+    "JUROS E MULTA DE MORA": ("13709", "31426", "20"),
+    "MENSALIDADE INDIVIDUAL": ("13709", "10550", "79"),
+    "TAXA DE ADESAO / INSCRICAO": ("13709", "31644", "224"),
+}
+
+
+def _normalize_text(text) -> str:
+    if text is None:
+        return ""
+    norm = unicodedata.normalize("NFKD", str(text)).strip()
+    return "".join(ch for ch in norm if not unicodedata.combining(ch)).upper()
+
+
+def _build_accounting_export(df: pd.DataFrame) -> pd.DataFrame:
+    target_cols = ["Débito", "Crédito", "Histórico", "Data", "Valor", "Complemento"]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=target_cols)
+    required_columns = {"Pagto", "Valor", "CLASSE"}
+    if not required_columns.issubset(df.columns):
+        return pd.DataFrame(columns=target_cols)
+
+    working = df.copy()
+    working["_Pagto"] = pd.to_datetime(working["Pagto"], errors="coerce")
+    working["_Complemento"] = working["CLASSE"].fillna("").astype(str)
+    working["_ComplementoNorm"] = working["_Complemento"].apply(_normalize_text)
+
+    mask_individual = ~working["_ComplementoNorm"].str.contains("PJ", na=False)
+    filtered = working[mask_individual]
+
+    records = []
+    for _, row in filtered.iterrows():
+        complemento = row.get("_Complemento", "")
+        complemento_norm = row.get("_ComplementoNorm", "")
+        debit, credit, history = _ACCOUNTING_RULES.get(complemento_norm, ("", "", ""))
+        pagto = row.get("_Pagto")
+        data_fmt = pagto.strftime("%d/%m/%Y") if pd.notna(pagto) else ""
+        valor_raw = row.get("Valor")
+        try:
+            valor_float = float(valor_raw)
+            valor_fmt = f"{valor_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        except Exception:
+            valor_fmt = str(valor_raw) if pd.notna(valor_raw) else ""
+
+        records.append(
+            {
+                "Débito": debit,
+                "Crédito": credit,
+                "Histórico": history,
+                "Data": data_fmt,
+                "Valor": valor_fmt,
+                "Complemento": complemento,
+            }
+        )
+
+    return pd.DataFrame(records, columns=target_cols)
 
 
 def _select_full_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -605,7 +667,7 @@ with tabs[0]:
         file_name="odontotech_limpo.csv",
         mime="text/csv",
     )
-    
+
     # Build full report PDF (all main tabs except Agrupar livre)
     if REPORTLAB_AVAILABLE:
         if st.button("Baixar PDF – relatório", key="pdf_tab0"):
@@ -752,9 +814,20 @@ with tabs[1]:
         )
         # Analítico (lançamentos)
         st.markdown("#### Lançamentos filtrados (analítico)")
+        accounting_df = _build_accounting_export(src)
+        accounting_csv = accounting_df.to_csv(index=False, sep=";").encode("utf-8-sig")
+        st.download_button(
+            "Baixar conciliação contábil",
+            data=accounting_csv,
+            file_name="conciliacao_contabil.csv",
+            mime="text/csv",
+            disabled=accounting_df.empty,
+        )
+        if accounting_df.empty:
+            st.caption("Nenhum registro elegível para conciliação contábil nos filtros atuais.")
         st.dataframe(_format_dates_for_display(src), use_container_width=True, height=360)
         _show_analytic_totals(src)
-        
+
         # PDF only with the free grouping (relatório total do agrupamento livre)
         if REPORTLAB_AVAILABLE and st.button("Baixar PDF – agrupamento livre", key="pdf_tab4"):
             sections = [("Agrupamento livre", g)]
