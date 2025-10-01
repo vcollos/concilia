@@ -29,6 +29,7 @@ from odontotech import (
     group_totals,
     read_odontotech_csv,
 )
+from ofx_utils import read_ofx_transactions
 
 
 st.set_page_config(page_title="Conciliação Odontotech", layout="wide")
@@ -440,6 +441,138 @@ def apply_date_filter(current_df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
             return current_df.loc[mask].copy(), f"{date_col} de {start.date()} até {end_date}"
     return current_df, "Sem filtro de data"
 
+
+def _load_ofx_files(files: List) -> tuple[pd.DataFrame, List[str]]:
+    frames: List[pd.DataFrame] = []
+    messages: List[str] = []
+    for upload in files:
+        try:
+            df_tmp = read_ofx_transactions(upload)
+        except Exception as exc:  # pragma: no cover - defensive
+            messages.append(f"{upload.name}: erro ao ler ({exc})")
+            continue
+        if df_tmp is None or df_tmp.empty:
+            messages.append(f"{upload.name}: nenhum lançamento encontrado")
+            continue
+        tmp = df_tmp.copy()
+        tmp["Arquivo"] = upload.name
+        frames.append(tmp)
+    if not frames:
+        return pd.DataFrame(), messages
+    combined = pd.concat(frames, ignore_index=True)
+    if "Data" in combined.columns:
+        combined["Data"] = pd.to_datetime(combined["Data"], errors="coerce")
+    if "Valor" in combined.columns:
+        combined["Valor"] = pd.to_numeric(combined["Valor"], errors="coerce")
+    sort_cols = [col for col in ["Data", "Valor", "Identificador", "Arquivo"] if col in combined.columns]
+    if sort_cols:
+        combined = combined.sort_values(sort_cols, na_position="last").reset_index(drop=True)
+    return combined, messages
+
+
+def _match_transactions(df_clean: pd.DataFrame, df_ofx: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if df_clean is None or df_clean.empty or df_ofx is None or df_ofx.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    if "Pagto" not in df_clean.columns or "Valor" not in df_clean.columns:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    odo = df_clean.copy()
+    ofx = df_ofx.copy()
+
+    odo["match_date"] = pd.to_datetime(odo["Pagto"], errors="coerce").dt.date
+    odo["match_value"] = pd.to_numeric(odo["Valor"], errors="coerce").round(2)
+    ofx["match_date"] = pd.to_datetime(ofx["Data"], errors="coerce").dt.date
+    ofx["match_value"] = pd.to_numeric(ofx["Valor"], errors="coerce").round(2)
+
+    odo = odo.dropna(subset=["match_date", "match_value"]).copy()
+    ofx = ofx.dropna(subset=["match_date", "match_value"]).copy()
+
+    odo["match_idx"] = odo.groupby(["match_date", "match_value"]).cumcount()
+    ofx["match_idx"] = ofx.groupby(["match_date", "match_value"]).cumcount()
+
+    merged = odo.merge(
+        ofx,
+        how="outer",
+        left_on=["match_date", "match_value", "match_idx"],
+        right_on=["match_date", "match_value", "match_idx"],
+        suffixes=("_odontotech", "_ofx"),
+        indicator=True,
+    )
+
+    matches = merged.loc[merged["_merge"] == "both"].copy()
+    odo_only = merged.loc[merged["_merge"] == "left_only"].copy()
+    ofx_only = merged.loc[merged["_merge"] == "right_only"].copy()
+
+    for df_out in (matches, odo_only, ofx_only):
+        for col in ["match_date", "match_value", "match_idx", "_merge"]:
+            if col in df_out.columns:
+                df_out.drop(columns=col, inplace=True)
+
+    if not matches.empty and {"Valor_odontotech", "Valor_ofx"}.issubset(matches.columns):
+        matches["Diferença"] = matches["Valor_odontotech"] - matches["Valor_ofx"]
+
+    return matches, odo_only, ofx_only
+
+
+def _select_existing(df: pd.DataFrame, columns: List[str]) -> List[str]:
+    return [col for col in columns if col in df.columns]
+
+
+def _sum_column(df: pd.DataFrame, column: str) -> float:
+    if df is None or df.empty or column not in df.columns:
+        return 0.0
+    return float(pd.to_numeric(df[column], errors="coerce").fillna(0).sum())
+
+
+def _render_bank_filter_controls(df: pd.DataFrame, ns: str) -> tuple[pd.DataFrame, str]:
+    if df is None or df.empty:
+        return df, "Sem filtro de banco"
+
+    available = [
+        col
+        for col in ["Nome Banco", "NºBanco", "ID Banco", "ID Conta Corrente"]
+        if col in df.columns
+    ]
+    if not available:
+        st.caption("Nenhuma coluna de banco encontrada no CSV limpo.")
+        return df, "Sem filtro de banco"
+
+    default_col = detect_banco_column(df) or available[0]
+    if default_col not in available:
+        default_col = available[0]
+
+    try:
+        default_index = available.index(default_col)
+    except ValueError:
+        default_index = 0
+
+    banco_col = st.selectbox(
+        "Coluna para identificar o banco",
+        options=available,
+        index=default_index,
+        key=f"{ns}_bank_col",
+    )
+
+    valores_disponiveis = sorted(
+        [v for v in df[banco_col].dropna().unique().tolist()],
+        key=lambda x: str(x).lower(),
+    )
+
+    selecionados = st.multiselect(
+        "Qual(is) banco(s) deseja conciliar?",
+        options=valores_disponiveis,
+        key=f"{ns}_bank_values",
+    )
+
+    if selecionados:
+        filtrado = df[df[banco_col].isin(selecionados)].copy()
+        resumo = f"{banco_col}: {', '.join(str(v) for v in selecionados)}"
+        if filtrado.empty:
+            st.warning("Nenhum registro do CSV corresponde aos bancos selecionados.")
+        return filtrado, resumo
+
+    return df, "Sem filtro de banco"
+
 st.subheader("Resumo do processamento (visão atual)")
 # Apply global period filter (if any) to reflect current view in the summary
 df_top_view, filter_summary_top = apply_date_filter(df)
@@ -454,7 +587,7 @@ st.caption(f"Período: {filter_summary_top}")
 
 st.divider()
 
-tabs = st.tabs(["Dados limpos", "Montar Relatórios"]) 
+tabs = st.tabs(["Dados limpos", "Montar Relatórios", "Comparar com OFX"]) 
 
 with tabs[0]:
     st.write("Pré-visualização dos dados limpos:")
@@ -651,3 +784,162 @@ with tabs[1]:
             st.warning("PDF server-side indisponível: instale 'reportlab' (pip install -r requirements.txt).")
     else:
         st.info("Selecione ao menos uma coluna para agrupar.")
+
+with tabs[2]:
+    st.write("Compare os lançamentos do CSV limpo com um ou mais extratos OFX.")
+    render_date_filter_controls(df, ns="tab_ofx")
+    df_filtered, filter_summary = apply_date_filter(df)
+    st.caption(f"Filtro: {filter_summary}")
+
+    df_for_compare, bank_filter_summary = _render_bank_filter_controls(df_filtered, ns="tab_ofx")
+    st.caption(f"Banco: {bank_filter_summary}")
+
+    ofx_uploads = st.file_uploader(
+        "Extrato bancário (OFX)",
+        type=["ofx"],
+        accept_multiple_files=True,
+        key="ofx_files",
+    )
+
+    if not ofx_uploads:
+        st.info("Envie ao menos um arquivo OFX para executar a comparação.")
+    else:
+        ofx_df, load_messages = _load_ofx_files(ofx_uploads)
+        for msg in load_messages:
+            st.warning(msg)
+
+        if ofx_df.empty:
+            st.error("Não encontramos lançamentos válidos nos arquivos OFX enviados.")
+        else:
+            st.markdown("#### Extrato OFX consolidado")
+            st.dataframe(
+                _format_dates_for_display(ofx_df),
+                use_container_width=True,
+                height=320,
+            )
+
+            if df_for_compare.empty:
+                st.warning("Nenhum lançamento do CSV atende aos filtros atuais de data/banco. Ajuste a seleção para conciliar.")
+
+            matches, odo_only, ofx_only = _match_transactions(df_for_compare, ofx_df)
+
+            total_matches = _sum_column(matches, "Valor_odontotech")
+            total_odo_only = _sum_column(odo_only, "Valor_odontotech")
+            total_ofx_only = _sum_column(ofx_only, "Valor_ofx")
+
+            col_a, col_b, col_c = st.columns(3)
+            col_a.metric("Lançamentos casados", f"{matches.shape[0]}", _fmt_brl(total_matches))
+            col_b.metric("Somente CSV", f"{odo_only.shape[0]}", _fmt_brl(total_odo_only))
+            col_c.metric("Somente OFX", f"{ofx_only.shape[0]}", _fmt_brl(total_ofx_only))
+
+            st.divider()
+
+            if not matches.empty:
+                st.markdown("#### Casamentos encontrados")
+                match_cols = _select_existing(
+                    matches,
+                    [
+                        "Pagto",
+                        "Valor_odontotech",
+                        "CLASSE",
+                        "Forma de Pagamento",
+                        "Nome Banco",
+                        "Histórico",
+                        "Historico",
+                        "Valor_ofx",
+                        "Data",
+                        "Descrição",
+                        "Documento",
+                        "Identificador",
+                        "Arquivo",
+                        "Diferença",
+                    ],
+                )
+                matches_display = matches[match_cols].copy()
+                if "Histórico" in matches_display.columns and "Historico" in matches_display.columns:
+                    matches_display.drop(columns=["Historico"], inplace=True)
+                matches_display.rename(
+                    columns={
+                        "Valor_odontotech": "Valor (CSV)",
+                        "Valor_ofx": "Valor (OFX)",
+                        "Diferença": "Diferença (CSV-OFX)",
+                    },
+                    inplace=True,
+                )
+                st.dataframe(
+                    _format_dates_for_display(matches_display),
+                    use_container_width=True,
+                    height=360,
+                )
+                st.download_button(
+                    "Baixar casamentos (CSV)",
+                    data=matches_display.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="casamentos_ofx.csv",
+                    mime="text/csv",
+                )
+            else:
+                st.caption("Nenhum casamento encontrado com as regras atuais (mesma data e valor).")
+
+            if not odo_only.empty:
+                st.markdown("#### Somente no CSV limpo")
+                odo_cols = _select_existing(
+                    odo_only,
+                    [
+                        "Pagto",
+                        "Valor_odontotech",
+                        "CLASSE",
+                        "Forma de Pagamento",
+                        "Nome Banco",
+                        "Histórico",
+                        "Historico",
+                        "Doc.",
+                    ],
+                )
+                odo_display = odo_only[odo_cols].copy()
+                if "Histórico" in odo_display.columns and "Historico" in odo_display.columns:
+                    odo_display.drop(columns=["Historico"], inplace=True)
+                odo_display.rename(columns={"Valor_odontotech": "Valor (CSV)"}, inplace=True)
+                st.dataframe(
+                    _format_dates_for_display(odo_display),
+                    use_container_width=True,
+                    height=300,
+                )
+                st.download_button(
+                    "Baixar somente CSV (CSV)",
+                    data=odo_display.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="somente_csv.csv",
+                    mime="text/csv",
+                )
+            else:
+                st.caption("Nenhum lançamento exclusivo do CSV no período filtrado.")
+
+            if not ofx_only.empty:
+                st.markdown("#### Somente no OFX")
+                ofx_cols = _select_existing(
+                    ofx_only,
+                    [
+                        "Data",
+                        "Valor_ofx",
+                        "Tipo",
+                        "Descrição",
+                        "Documento",
+                        "Identificador",
+                        "Arquivo",
+                        "Memo",
+                    ],
+                )
+                ofx_display = ofx_only[ofx_cols].copy()
+                ofx_display.rename(columns={"Valor_ofx": "Valor (OFX)"}, inplace=True)
+                st.dataframe(
+                    _format_dates_for_display(ofx_display),
+                    use_container_width=True,
+                    height=300,
+                )
+                st.download_button(
+                    "Baixar somente OFX (CSV)",
+                    data=ofx_display.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="somente_ofx.csv",
+                    mime="text/csv",
+                )
+            else:
+                st.caption("Nenhum lançamento exclusivo do OFX para o filtro atual.")
