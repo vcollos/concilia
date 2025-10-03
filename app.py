@@ -327,9 +327,6 @@ def _build_accounting_export(df: pd.DataFrame) -> pd.DataFrame:
 
     records = []
     for _, row in working.iterrows():
-        complemento_norm = _normalize_text(row.get("_Complemento"))
-        if "PJ" in complemento_norm:
-            continue
         records.append(
             _accounting_entry_from_values(
                 row.get("_Complemento"),
