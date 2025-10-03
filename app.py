@@ -296,12 +296,12 @@ def _accounting_entry_from_values(
     valor_fmt = ""
     try:
         if pd.notna(amount_raw):
-            valor_float = float(amount_raw)
+            valor_float = abs(float(amount_raw))
             valor_fmt = (
                 f"{valor_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
             )
     except Exception:
-        valor_fmt = ""
+        valor_fmt = str(amount_raw).replace("-", "") if amount_raw is not None else ""
 
     return {
         "Débito": debit,
@@ -327,6 +327,9 @@ def _build_accounting_export(df: pd.DataFrame) -> pd.DataFrame:
 
     records = []
     for _, row in working.iterrows():
+        complemento_norm = _normalize_text(row.get("_Complemento"))
+        if complemento_norm == "ATO COMPLEMENTAR PJ":
+            continue
         records.append(
             _accounting_entry_from_values(
                 row.get("_Complemento"),
@@ -360,6 +363,9 @@ def _build_grouped_accounting_export(grouped_df: pd.DataFrame, grouping_cols: li
 
     records = []
     for _, row in grouped_df.iterrows():
+        complemento_norm = _normalize_text(row.get("CLASSE"))
+        if complemento_norm == "ATO COMPLEMENTAR PJ":
+            continue
         records.append(
             _accounting_entry_from_values(
                 row.get("CLASSE"),
