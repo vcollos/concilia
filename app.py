@@ -274,6 +274,43 @@ def _normalize_text(text) -> str:
     return "".join(ch for ch in norm if not unicodedata.combining(ch)).upper()
 
 
+def _accounting_entry_from_values(
+    complemento_raw,
+    amount_raw,
+    date_raw,
+) -> dict:
+    complemento = "" if complemento_raw is None else str(complemento_raw)
+    complemento_norm = _normalize_text(complemento)
+    debit, credit, history = _ACCOUNTING_RULES.get(complemento_norm, ("", "", ""))
+
+    date_fmt = ""
+    try:
+        ts = pd.to_datetime(date_raw, errors="coerce")
+        if pd.notna(ts):
+            date_fmt = ts.strftime("%d/%m/%Y")
+    except Exception:
+        date_fmt = ""
+
+    valor_fmt = ""
+    try:
+        if pd.notna(amount_raw):
+            valor_float = float(amount_raw)
+            valor_fmt = (
+                f"{valor_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            )
+    except Exception:
+        valor_fmt = ""
+
+    return {
+        "Débito": debit,
+        "Crédito": credit,
+        "Histórico": history,
+        "Data": date_fmt,
+        "Valor": valor_fmt,
+        "Complemento": complemento,
+    }
+
+
 def _build_accounting_export(df: pd.DataFrame) -> pd.DataFrame:
     target_cols = ["Débito", "Crédito", "Histórico", "Data", "Valor", "Complemento"]
     if df is None or df.empty:
@@ -292,27 +329,48 @@ def _build_accounting_export(df: pd.DataFrame) -> pd.DataFrame:
 
     records = []
     for _, row in filtered.iterrows():
-        complemento = row.get("_Complemento", "")
-        complemento_norm = row.get("_ComplementoNorm", "")
-        debit, credit, history = _ACCOUNTING_RULES.get(complemento_norm, ("", "", ""))
-        pagto = row.get("_Pagto")
-        data_fmt = pagto.strftime("%d/%m/%Y") if pd.notna(pagto) else ""
-        valor_raw = row.get("Valor")
-        try:
-            valor_float = float(valor_raw)
-            valor_fmt = f"{valor_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        except Exception:
-            valor_fmt = str(valor_raw) if pd.notna(valor_raw) else ""
-
         records.append(
-            {
-                "Débito": debit,
-                "Crédito": credit,
-                "Histórico": history,
-                "Data": data_fmt,
-                "Valor": valor_fmt,
-                "Complemento": complemento,
-            }
+            _accounting_entry_from_values(
+                row.get("_Complemento"),
+                row.get("Valor"),
+                row.get("_Pagto"),
+            )
+        )
+
+    return pd.DataFrame(records, columns=target_cols)
+
+
+def _build_grouped_accounting_export(grouped_df: pd.DataFrame, grouping_cols: list[str]) -> pd.DataFrame:
+    target_cols = ["Débito", "Crédito", "Histórico", "Data", "Valor", "Complemento"]
+    if grouped_df is None or grouped_df.empty:
+        return pd.DataFrame(columns=target_cols)
+    if "CLASSE" not in grouped_df.columns or "total" not in grouped_df.columns:
+        return pd.DataFrame(columns=target_cols)
+
+    def _pick_date(row):
+        if "Pagto" in grouped_df.columns:
+            return row.get("Pagto")
+        for col in grouping_cols:
+            val = row.get(col)
+            try:
+                ts = pd.to_datetime(val, errors="coerce")
+            except Exception:
+                ts = pd.NaT
+            if pd.notna(ts):
+                return ts
+        return None
+
+    records = []
+    for _, row in grouped_df.iterrows():
+        complemento_norm = _normalize_text(row.get("CLASSE"))
+        if "PJ" in complemento_norm:
+            continue
+        records.append(
+            _accounting_entry_from_values(
+                row.get("CLASSE"),
+                row.get("total"),
+                _pick_date(row),
+            )
         )
 
     return pd.DataFrame(records, columns=target_cols)
@@ -812,6 +870,17 @@ with tabs[1]:
             file_name="totais_agrupados.csv",
             mime="text/csv",
         )
+        grouped_accounting_df = _build_grouped_accounting_export(g, by)
+        grouped_accounting_csv = grouped_accounting_df.to_csv(index=False, sep=";").encode("utf-8-sig")
+        st.download_button(
+            "Baixar conciliação contábil (agrupado)",
+            data=grouped_accounting_csv,
+            file_name="conciliacao_contabil_agrupado.csv",
+            mime="text/csv",
+            disabled=grouped_accounting_df.empty,
+        )
+        if grouped_accounting_df.empty and "CLASSE" not in g.columns:
+            st.caption("Inclua a coluna CLASSE no agrupamento para gerar a conciliação contábil agrupada.")
         # Analítico (lançamentos)
         st.markdown("#### Lançamentos filtrados (analítico)")
         accounting_df = _build_accounting_export(src)
