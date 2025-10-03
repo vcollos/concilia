@@ -264,6 +264,7 @@ _ACCOUNTING_RULES = {
     "JUROS E MULTA DE MORA": ("13709", "31426", "20"),
     "MENSALIDADE INDIVIDUAL": ("13709", "10550", "79"),
     "MENSALIDADE PJ - FAMILIAR": ("13709", "10550", "5"),
+    "REEMBOLSO ATO COMPLEMENTAR": ("12767", "13709", "5"),
     "TAXA DE ADESAO / INSCRICAO": ("13709", "31644", "224"),
 }
 
@@ -323,13 +324,9 @@ def _build_accounting_export(df: pd.DataFrame) -> pd.DataFrame:
     working = df.copy()
     working["_Pagto"] = pd.to_datetime(working["Pagto"], errors="coerce")
     working["_Complemento"] = working["CLASSE"].fillna("").astype(str)
-    working["_ComplementoNorm"] = working["_Complemento"].apply(_normalize_text)
-
-    mask_individual = ~working["_ComplementoNorm"].str.contains("PJ", na=False)
-    filtered = working[mask_individual]
 
     records = []
-    for _, row in filtered.iterrows():
+    for _, row in working.iterrows():
         records.append(
             _accounting_entry_from_values(
                 row.get("_Complemento"),
