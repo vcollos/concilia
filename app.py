@@ -263,6 +263,7 @@ _ACCOUNTING_RULES = {
     "DESCONTOS CONCEDIDOS SOBRE MENSALIDADE": ("52874", "13709", "221"),
     "JUROS E MULTA DE MORA": ("13709", "31426", "20"),
     "MENSALIDADE INDIVIDUAL": ("13709", "10550", "79"),
+    "MENSALIDADE PJ - FAMILIAR": ("13709", "10550", "5"),
     "TAXA DE ADESAO / INSCRICAO": ("13709", "31644", "224"),
 }
 
@@ -362,9 +363,6 @@ def _build_grouped_accounting_export(grouped_df: pd.DataFrame, grouping_cols: li
 
     records = []
     for _, row in grouped_df.iterrows():
-        complemento_norm = _normalize_text(row.get("CLASSE"))
-        if "PJ" in complemento_norm:
-            continue
         records.append(
             _accounting_entry_from_values(
                 row.get("CLASSE"),
