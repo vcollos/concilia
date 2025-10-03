@@ -328,7 +328,7 @@ def _build_accounting_export(df: pd.DataFrame) -> pd.DataFrame:
     records = []
     for _, row in working.iterrows():
         complemento_norm = _normalize_text(row.get("_Complemento"))
-        if complemento_norm == "ATO COMPLEMENTAR PJ":
+        if "PJ" in complemento_norm:
             continue
         records.append(
             _accounting_entry_from_values(
@@ -364,7 +364,7 @@ def _build_grouped_accounting_export(grouped_df: pd.DataFrame, grouping_cols: li
     records = []
     for _, row in grouped_df.iterrows():
         complemento_norm = _normalize_text(row.get("CLASSE"))
-        if complemento_norm == "ATO COMPLEMENTAR PJ":
+        if "PJ" in complemento_norm:
             continue
         records.append(
             _accounting_entry_from_values(
